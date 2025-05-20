@@ -271,10 +271,12 @@ summary_row["% of Days"] = ""
 df_avg = pd.concat([df_avg, summary_row])
 
 st.subheader("📊 TAVG Buckets")
-st.dataframe(df_avg.style.apply(
-    lambda df: ["font-weight: bold" if i == "TOTAL" else "" for i in df.index],
-    axis=0
-))
+st.dataframe(
+    df_avg.style
+        .format({"% of Days": "{:.1f}", "Shifts (100%)": "{:.0f}", "Shifts (90%)": "{:.0f}"})
+        .apply(lambda df: ["font-weight: bold" if i == "TOTAL" else "" for i in df.index], axis=0)
+)
+
 
 # -------------------------------
 # 📊 Total Across All Locations
