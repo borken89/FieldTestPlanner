@@ -250,6 +250,32 @@ st.dataframe(df_max)
 st.subheader("❄️ TMIN Buckets")
 st.dataframe(df_min)
 
+# TAVG Buckets
+tavg_cols = sorted([col for col in subset.columns if col.startswith("pr_avg_bin_")])
+bucket_avg = (subset[tavg_cols].mean() * 100).round(2)
+shifts_avg = (bucket_avg / 100 * planned_shifts).round(0).astype(int)
+shifts_avg_90 = (shifts_avg * 0.9).round(0).astype(int)
+
+df_avg = pd.DataFrame({
+    "% of Days": bucket_avg,
+    "Shifts (100%)": shifts_avg,
+    "Shifts (90%)": shifts_avg_90
+}).reindex([f"pr_avg_bin_{i}" for i in range(8)], fill_value=0)
+
+df_avg.index = df_avg.index.map(lambda x: bucket_label_map[f"bin{x.split('_')[-1]}"])
+
+# Add TOTAL row
+summary_row = df_avg[["Shifts (100%)", "Shifts (90%)"]].sum().to_frame().T
+summary_row.index = ["TOTAL"]
+summary_row["% of Days"] = ""
+df_avg = pd.concat([df_avg, summary_row])
+
+st.subheader("📊 TAVG Buckets")
+st.dataframe(df_avg.style.apply(
+    lambda df: ["font-weight: bold" if i == "TOTAL" else "" for i in df.index],
+    axis=0
+))
+
 # -------------------------------
 # 📊 Total Across All Locations
 # -------------------------------
@@ -257,6 +283,7 @@ st.subheader("🧮 Total Planned Shifts Across All Locations")
 
 sum_max = pd.Series(dtype="float64")
 sum_min = pd.Series(dtype="float64")
+sum_avg = pd.Series(dtype="float64")
 
 for loc in locations:
     shift_weights = pd.Series(1.0, index=calendar)
@@ -277,6 +304,10 @@ for loc in locations:
         bn = (sub[tmin_cols].mean() * 100)
         sn = (bn / 100 * planned).fillna(0)
         sum_min = sum_min.add(sn, fill_value=0)
+        ba = (sub[[f"pr_avg_bin_{i}" for i in range(8)]].mean() * 100)
+    sa = (ba / 100 * planned).fillna(0)
+    sum_avg = sum_avg.add(sa, fill_value=0)
+
 
 df_sum_max = pd.DataFrame({
     "Shifts (100%)": sum_max.round(0).astype(int),
@@ -307,6 +338,24 @@ df_sum_min = pd.concat([df_sum_min, total_row])
 
 st.markdown("### ❄️ TMIN Shift Totals Across All Locations")
 st.dataframe(df_sum_min)
+
+df_sum_avg = pd.DataFrame({
+    "Shifts (100%)": sum_avg.round(0).astype(int),
+    "Shifts (90%)": (sum_avg * 0.9).round(0).astype(int)
+}).reindex([f"pr_avg_bin_{i}" for i in range(8)], fill_value=0)
+
+df_sum_avg.index = df_sum_avg.index.map(lambda x: bucket_label_map[f"bin{x.split('_')[-1]}"])
+
+# Add summary row
+total_row = df_sum_avg.sum(numeric_only=True).to_frame().T
+total_row.index = ["TOTAL"]
+df_sum_avg = pd.concat([df_sum_avg, total_row])
+
+st.markdown("### 📊 TAVG Shift Totals Across All Locations")
+st.dataframe(df_sum_avg.style.apply(
+    lambda df: ["font-weight: bold" if i == "TOTAL" else "" for i in df.index],
+    axis=0
+))
 
 # -------------------------------
 # 🗂️ Multi-Location Bucket Matrix Table
