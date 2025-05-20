@@ -267,13 +267,13 @@ df_avg.index = df_avg.index.map(lambda x: bucket_label_map[f"bin{x.split('_')[-1
 # Add TOTAL row
 summary_row = df_avg[["Shifts (100%)", "Shifts (90%)"]].sum().to_frame().T
 summary_row.index = ["TOTAL"]
-summary_row["% of Days"] = ""
+summary_row["% of Days"] = np.nan
 df_avg = pd.concat([df_avg, summary_row])
 
 st.subheader("📊 TAVG Buckets")
 st.dataframe(
     df_avg.style
-        .format({"% of Days": "{:.1f}", "Shifts (100%)": "{:.0f}", "Shifts (90%)": "{:.0f}"})
+        .format({"% of Days": "{:.2f}", "Shifts (100%)": "{:.0f}", "Shifts (90%)": "{:.0f}"})
         .apply(lambda df: ["font-weight: bold" if i == "TOTAL" else "" for i in df.index], axis=0)
 )
 
