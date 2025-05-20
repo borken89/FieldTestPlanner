@@ -267,7 +267,7 @@ df_avg.index = df_avg.index.map(lambda x: bucket_label_map[f"bin{x.split('_')[-1
 # Add TOTAL row
 summary_row = df_avg[["Shifts (100%)", "Shifts (90%)"]].sum().to_frame().T
 summary_row.index = ["TOTAL"]
-summary_row["% of Days"] = np.nan
+summary_row["% of Days"] = df_avg["% of Days"].sum().round(2)
 df_avg = pd.concat([df_avg, summary_row])
 
 st.subheader("📊 TAVG Buckets")
