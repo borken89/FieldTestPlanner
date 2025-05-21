@@ -261,17 +261,6 @@ melted["Temperature Type"] = melted["Temperature Type"].map({
     "tavg_f": "Avg Temp (TAVG)"
 })
 
-if melted.empty:
-    st.warning("⚠️ No data to display in the chart.")
-    st.dataframe(df_plot.head())  # Show fallback data
-else:
-    line_chart = alt.Chart(melted).mark_line().encode(
-        x=alt.X("date:T", title="Day of Year"),
-        y=alt.Y("Degrees (°F)", title="Avg Temp (°F)"),
-        color="Temperature Type"
-    ).properties(height=300)
-    st.altair_chart(line_chart, use_container_width=True)
-
 st.write("Chart preview:", melted.head())
 
 line_chart = alt.Chart(melted).mark_line().encode(
