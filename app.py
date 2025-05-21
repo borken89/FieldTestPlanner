@@ -233,6 +233,8 @@ raw_df = raw_df[raw_df["date"].dt.year.between(2015, 2024)]
 raw_df = raw_df[raw_df["doy"] != 366]
 
 doy_list = calendar_range.dayofyear
+if "doy" not in raw_df.columns:
+    raw_df["doy"] = raw_df["date"].dt.dayofyear
 df_plot = raw_df[(raw_df["location"] == location) & (raw_df["doy"].isin(doy_list))]
 
 # Average across years by DOY
@@ -255,6 +257,17 @@ melted["Temperature Type"] = melted["Temperature Type"].map({
     "tmin_f": "Min Temp (TMIN)",
     "tavg_f": "Avg Temp (TAVG)"
 })
+
+if melted.empty:
+    st.warning("⚠️ No data to display in the chart.")
+    st.dataframe(df_plot.head())  # Show fallback data
+else:
+    line_chart = alt.Chart(melted).mark_line().encode(
+        x=alt.X("date:T", title="Day of Year"),
+        y=alt.Y("Degrees (°F)", title="Avg Temp (°F)"),
+        color="Temperature Type"
+    ).properties(height=300)
+    st.altair_chart(line_chart, use_container_width=True)
 
 line_chart = alt.Chart(melted).mark_line().encode(
     x=alt.X("date:T", title="Day of Year"),
