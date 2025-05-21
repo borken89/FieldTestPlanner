@@ -5,6 +5,8 @@ import altair as alt
 from datetime import datetime
 import calendar
 
+alt.renderers.set_embed_options(actions=False)
+
 # -------------------------------
 # ⚙️ Load data and config
 # -------------------------------
