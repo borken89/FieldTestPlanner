@@ -12,8 +12,9 @@ import calendar
 def load_data():
     return pd.read_parquet("combined_daily_temperature.parquet")
 
-raw_df = load_data()
+raw_df = load_data().copy()
 raw_df["doy"] = raw_df["date"].dt.dayofyear
+raw_df = raw_df[(raw_df["date"].dt.year.between(2015, 2024)) & (raw_df["doy"] != 366)]
 locations = sorted(raw_df["location"].unique())
 
 cold_shift_locations = ["Fairbanks AK", "CASS LAKE (Bemidji) MN"]
@@ -268,6 +269,8 @@ else:
         color="Temperature Type"
     ).properties(height=300)
     st.altair_chart(line_chart, use_container_width=True)
+
+st.write("Chart preview:", melted.head())
 
 line_chart = alt.Chart(melted).mark_line().encode(
     x=alt.X("date:T", title="Day of Year"),
