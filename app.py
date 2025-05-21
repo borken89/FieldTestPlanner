@@ -1,8 +1,8 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
-import altair as alt
 import numpy as np
+import altair as alt
+from datetime import datetime
 import calendar
 
 # -------------------------------
@@ -10,28 +10,14 @@ import calendar
 # -------------------------------
 @st.cache_data
 def load_data():
-    return pd.read_parquet("doy_temperature_buckets.parquet")
+    return pd.read_parquet("combined_daily_temperature.parquet")
 
-bucket_df = load_data()
+raw_df = load_data()
+locations = sorted(raw_df["location"].unique())
 
 cold_shift_locations = ["Fairbanks AK", "CASS LAKE (Bemidji) MN"]
 one_shift_windows = [("01-01", "01-31"), ("02-01", "02-27"), ("11-01", "11-30"), ("12-01", "12-31")]
 
-# Shared bucket label map for all variables
-bucket_label_map = {
-    "bin0": "< -30°F",
-    "bin1": "-30°F to -20°F",
-    "bin2": "-20°F to 0°F",
-    "bin3": "0°F to 80°F",
-    "bin4": "80°F to 100°F",
-    "bin5": "100°F to 105°F",
-    "bin6": "105°F to 110°F",
-    "bin7": "> 110°F"
-}
-
-# -------------------------------
-# 📘 Title and Inputs
-# -------------------------------
 st.title("🌡️ Field Test Temperature Planner")
 
 st.markdown("""
@@ -39,7 +25,7 @@ This tool helps you plan field test windows using historical temperature data fr
 
 For any selected **location** and **month-day range**, it computes:
 - 📈 Avg/Std Dev of TMAX and TMIN
-- 📦 Bucket % of days
+- 📦 Bucket % of days (TMAX, TMIN, TAVG)
 - 🧮 Shift planning estimates (100% & 90%)
 
 ℹ️ Actual average daily temperature (**TAVG**) is used where available.  
@@ -88,124 +74,115 @@ with st.expander("📍 View Station Names and IDs"):
 | Edmonton International CS, AB | `3012206`
     """)
 
-
-locations = sorted(bucket_df["location"].unique())
+# -------------------------------
+# 📍 Location + Date Range
+# -------------------------------
 location = st.selectbox("📍 Select location", locations)
 
 col1, col2 = st.columns(2)
+anchor_year = 2025
 
-import calendar
-
-# Month/day picker with dynamic day list
 months = list(range(1, 13))
-month_names = [calendar.month_name[m] for m in months]
-anchor_year = 2025  # Fixed reference year
-
-# -- Start --
 start_month = col1.selectbox("📅 Start Month", months, index=5, format_func=lambda m: calendar.month_name[m])
-max_start_day = calendar.monthrange(anchor_year, start_month)[1]
-start_day = col1.selectbox("📅 Start Day", list(range(1, max_start_day + 1)), index=0)
+start_day = col1.selectbox("📅 Start Day", list(range(1, calendar.monthrange(anchor_year, start_month)[1] + 1)), index=0)
 
-# -- End --
 end_month = col2.selectbox("📅 End Month", months, index=7, format_func=lambda m: calendar.month_name[m])
-max_end_day = calendar.monthrange(anchor_year, end_month)[1]
-end_day = col2.selectbox("📅 End Day", list(range(1, max_end_day + 1)), index=max_end_day - 1)
+end_day = col2.selectbox("📅 End Day", list(range(1, calendar.monthrange(anchor_year, end_month)[1] + 1)), index=30)
 
-# Create datetime objects (now guaranteed valid)
 start_date = datetime(anchor_year, start_month, start_day)
 end_date = datetime(anchor_year, end_month, end_day)
+calendar_range = pd.date_range(start=start_date, end=end_date)
 
 shifts_per_day = st.slider("⚙️ Shifts per day", 1, 3, 2)
 
 # -------------------------------
-# 🗓️ Build calendar using dummy year
+# ⚙️ Bucket customization
 # -------------------------------
-# Force same year to ensure clean DOY handling
-anchor_year = 2025
-start_date = datetime(anchor_year, start_month, start_day)
-end_date = datetime(anchor_year, end_month, end_day)
+with st.expander("🎛 Customize temperature buckets"):
+    default_bins = "-999, -20, 0, 20, 40, 60, 80, 999"
+    user_input = st.text_input("Enter bucket breakpoints in °F (comma-separated):", value=default_bins)
+    try:
+        bins_f = sorted([float(x.strip()) for x in user_input.split(",")])
+        bins_c = [(f - 32) * 5 / 9 for f in bins_f]
+        bin_labels = [f"{int(bins_f[i])}°F to {int(bins_f[i+1])}°F" for i in range(len(bins_f) - 1)]
+    except ValueError:
+        st.error("Invalid format. Please enter comma-separated numeric values like -999, -20, 0, 80, 999.")
+        st.stop()
 
-calendar = pd.date_range(start=start_date, end=end_date)
-shift_weights = pd.Series(1.0, index=calendar)
+bin_count = len(bins_c) - 1
+bucket_range = range(bin_count)
+
+# -------------------------------
+# 🔎 Filter raw data to selected location and dates
+# -------------------------------
+doy_list = calendar_range.strftime('%j').astype(int)
+df = raw_df[(raw_df["location"] == location) & (raw_df["date"].dt.dayofyear.isin(doy_list))].copy()
+
+if df.empty:
+    st.error("⚠️ No data found for the selected range.")
+    st.stop()
+
+# -------------------------------
+# 📦 Bin TMAX/TMIN/TAVG dynamically
+# -------------------------------
+df["tmax_bin"] = pd.cut(df["tmax_c"], bins=bins_c, labels=range(bin_count), right=False, include_lowest=True)
+df["tmin_bin"] = pd.cut(df["tmin_c"], bins=bins_c, labels=range(bin_count), right=False, include_lowest=True)
+df["tavg_bin"] = pd.cut(df["tavg_c"], bins=bins_c, labels=range(bin_count), right=False, include_lowest=True)
+
+# One-hot encode
+tmax_bins = pd.get_dummies(df["tmax_bin"], prefix="pr_max_bin")
+tmin_bins = pd.get_dummies(df["tmin_bin"], prefix="pr_min_bin")
+tavg_bins = pd.get_dummies(df["tavg_bin"], prefix="pr_avg_bin")
+
+# Ensure all expected columns exist
+for i in bucket_range:
+    for prefix, bins in [("pr_max_bin", tmax_bins), ("pr_min_bin", tmin_bins), ("pr_avg_bin", tavg_bins)]:
+        col = f"{prefix}_{i}"
+        if col not in bins:
+            bins[col] = 0
+
+# Combine all one-hot bins into main DataFrame
+df = pd.concat([df, tmax_bins, tmin_bins, tavg_bins], axis=1)
+
+# -------------------------------
+# 🧮 Workday weighting
+# -------------------------------
+shift_weights = pd.Series(1.0, index=calendar_range)
 
 if location in cold_shift_locations:
     for start_str, end_str in one_shift_windows:
-        for date in calendar:
+        for date in calendar_range:
             if f"{date:%m-%d}" >= start_str and f"{date:%m-%d}" <= end_str and date.weekday() < 5:
                 shift_weights[date] = 0.5
 
-n_days = len(calendar)
-n_weekdays = calendar.weekday.isin(range(0, 5)).sum()
-adjusted_workdays = shift_weights[calendar.weekday < 5].sum()
+n_days = len(calendar_range)
+n_weekdays = calendar_range.weekday.isin(range(0, 5)).sum()
+adjusted_workdays = shift_weights[calendar_range.weekday < 5].sum()
 planned_shifts = int(adjusted_workdays * shifts_per_day)
 
+# -------------------------------
+# 📊 Bucket % + shift tables
+# -------------------------------
+def build_summary_table(type_prefix, data_frame):
+    cols = [f"{type_prefix}_{i}" for i in bucket_range]
+    bucket_vals = (data_frame[cols].mean() * 100).round(2)
+    shifts_100 = (bucket_vals / 100 * planned_shifts).round(0).astype(int)
+    shifts_90 = (shifts_100 * 0.9).round(0).astype(int)
+
+    df_out = pd.DataFrame({
+        "% of Days": bucket_vals,
+        "Shifts (100%)": shifts_100,
+        "Shifts (90%)": shifts_90
+    })
+
+    df_out.index = bin_labels
+    total = df_out[["Shifts (100%)", "Shifts (90%)"]].sum(numeric_only=True).to_frame().T
+    total.index = ["TOTAL"]
+    total["% of Days"] = np.nan
+    return pd.concat([df_out, total])
 
 # -------------------------------
-# 📊 Subset and summary stats
-# -------------------------------
-doy_list = calendar.strftime('%j').astype(int)
-subset = bucket_df[(bucket_df["location"] == location) & (bucket_df["doy"].isin(doy_list))]
-
-if subset.empty:
-    st.error("⚠️ No temperature data found for this location/date range.")
-    st.stop()
-
-tmax_cols = sorted([col for col in subset.columns if col.startswith("pr_max_bin_")])
-tmin_cols = sorted([col for col in subset.columns if col.startswith("pr_min_bin_")])
-
-mean_max = subset["expected_tmax"].mean()
-std_max = subset["expected_tmax"].std()
-mean_min = subset["expected_tmin"].mean()
-std_min = subset["expected_tmin"].std()
-
-bucket_max = (subset[tmax_cols].mean() * 100).round(2)
-bucket_min = (subset[tmin_cols].mean() * 100).round(2)
-
-shifts_max = (bucket_max / 100 * planned_shifts).round(0).astype(int)
-shifts_max_90 = (shifts_max * 0.9).round(0).astype(int)
-
-shifts_min = (bucket_min / 100 * planned_shifts).round(0).astype(int)
-shifts_min_90 = (shifts_min * 0.9).round(0).astype(int)
-
-# -------------------------------
-# 📈 Chart: Daily TMAX, TMIN, and Avg (Fahrenheit)
-# -------------------------------
-
-st.subheader("📈 Avg Daily Temperatures (°F) Over Selected Window")
-
-plot_df = subset[["doy", "expected_tmax", "expected_tmin"]].copy()
-plot_df["date"] = pd.to_datetime(plot_df["doy"], format="%j").dt.strftime("%b %d")
-
-# Convert to Fahrenheit
-plot_df["expected_tmax"] = plot_df["expected_tmax"] * 9/5 + 32
-plot_df["expected_tmin"] = plot_df["expected_tmin"] * 9/5 + 32
-plot_df["expected_mean"] = (plot_df["expected_tmax"] + plot_df["expected_tmin"]) / 2
-
-plot_df = plot_df.sort_values("doy")
-
-melted = pd.melt(
-    plot_df,
-    id_vars=["date"],
-    value_vars=["expected_tmax", "expected_tmin", "expected_mean"],
-    var_name="Temperature Type",
-    value_name="Degrees (°F)"
-)
-melted["Temperature Type"] = melted["Temperature Type"].map({
-    "expected_tmax": "Max Temp (TMAX)",
-    "expected_tmin": "Min Temp (TMIN)",
-    "expected_mean": "Avg Temp (TAVG)"
-})
-
-line_chart = alt.Chart(melted).mark_line().encode(
-    x=alt.X("date", title="Date", sort=None),
-    y=alt.Y("Degrees (°F)", title="Avg Temp (°F)"),
-    color="Temperature Type"
-).properties(height=300)
-
-st.altair_chart(line_chart, use_container_width=True)
-
-# -------------------------------
-# 📍 Location Summary + Tables
+# 📍 Summary for selected location
 # -------------------------------
 st.markdown(f"### 📍 Summary for **{location}**")
 st.markdown(f"- **Calendar days**: {n_days}")
@@ -214,72 +191,25 @@ if location in cold_shift_locations:
     st.markdown(f"- **Adjusted for 1-shift rules**: {adjusted_workdays:.1f} effective workdays")
 st.markdown(f"- **Planned shifts**: {planned_shifts}")
 
-df_max = pd.DataFrame({
-    "% of Days": bucket_max,
-    "Shifts (100%)": shifts_max,
-    "Shifts (90%)": shifts_max_90
-}).reindex([f"pr_max_bin_{i}" for i in range(8)], fill_value=0)
-
-df_max.index = df_max.index.map(lambda x: bucket_label_map[f"bin{x.split('_')[-1]}"])
-
-# Add total row (for shift columns only)
-summary_row = df_max[["Shifts (100%)", "Shifts (90%)"]].sum(numeric_only=True).to_frame().T
-summary_row.index = ["TOTAL"]
-summary_row["% of Days"] = ""
-
-df_max = pd.concat([df_max, summary_row])
-
-df_min = pd.DataFrame({
-    "% of Days": bucket_min,
-    "Shifts (100%)": shifts_min,
-    "Shifts (90%)": shifts_min_90
-}).reindex([f"pr_min_bin_{i}" for i in range(8)], fill_value=0)
-
-df_min.index = df_min.index.map(lambda x: bucket_label_map[f"bin{x.split('_')[-1]}"])
-
-# Add total row (for shift columns only)
-summary_row = df_min[["Shifts (100%)", "Shifts (90%)"]].sum(numeric_only=True).to_frame().T
-summary_row.index = ["TOTAL"]
-summary_row["% of Days"] = ""
-
-df_min = pd.concat([df_min, summary_row])
+# Individual location tables
+df_max = build_summary_table("pr_max_bin", df)
+df_min = build_summary_table("pr_min_bin", df)
+df_avg = build_summary_table("pr_avg_bin", df)
 
 st.subheader("🔥 TMAX Buckets")
-st.dataframe(df_max)
+st.dataframe(df_max.style.format({"% of Days": "{:.2f}", "Shifts (100%)": "{:.0f}", "Shifts (90%)": "{:.0f}"}).apply(
+    lambda df: ["font-weight: bold" if i == "TOTAL" else "" for i in df.index], axis=0))
 
 st.subheader("❄️ TMIN Buckets")
-st.dataframe(df_min)
-
-# TAVG Buckets
-tavg_cols = sorted([col for col in subset.columns if col.startswith("pr_avg_bin_")])
-bucket_avg = (subset[tavg_cols].mean() * 100).round(2)
-shifts_avg = (bucket_avg / 100 * planned_shifts).round(0).astype(int)
-shifts_avg_90 = (shifts_avg * 0.9).round(0).astype(int)
-
-df_avg = pd.DataFrame({
-    "% of Days": bucket_avg,
-    "Shifts (100%)": shifts_avg,
-    "Shifts (90%)": shifts_avg_90
-}).reindex([f"pr_avg_bin_{i}" for i in range(8)], fill_value=0)
-
-df_avg.index = df_avg.index.map(lambda x: bucket_label_map[f"bin{x.split('_')[-1]}"])
-
-# Add TOTAL row
-summary_row = df_avg[["Shifts (100%)", "Shifts (90%)"]].sum().to_frame().T
-summary_row.index = ["TOTAL"]
-summary_row["% of Days"] = df_avg["% of Days"].sum().round(2)
-df_avg = pd.concat([df_avg, summary_row])
+st.dataframe(df_min.style.format({"% of Days": "{:.2f}", "Shifts (100%)": "{:.0f}", "Shifts (90%)": "{:.0f}"}).apply(
+    lambda df: ["font-weight: bold" if i == "TOTAL" else "" for i in df.index], axis=0))
 
 st.subheader("📊 TAVG Buckets")
-st.dataframe(
-    df_avg.style
-        .format({"% of Days": "{:.2f}", "Shifts (100%)": "{:.0f}", "Shifts (90%)": "{:.0f}"})
-        .apply(lambda df: ["font-weight: bold" if i == "TOTAL" else "" for i in df.index], axis=0)
-)
-
+st.dataframe(df_avg.style.format({"% of Days": "{:.2f}", "Shifts (100%)": "{:.0f}", "Shifts (90%)": "{:.0f}"}).apply(
+    lambda df: ["font-weight: bold" if i == "TOTAL" else "" for i in df.index], axis=0))
 
 # -------------------------------
-# 📊 Total Across All Locations
+# 🧮 Total Planned Shifts Across All Locations
 # -------------------------------
 st.subheader("🧮 Total Planned Shifts Across All Locations")
 
@@ -288,76 +218,58 @@ sum_min = pd.Series(dtype="float64")
 sum_avg = pd.Series(dtype="float64")
 
 for loc in locations:
-    shift_weights = pd.Series(1.0, index=calendar)
+    shift_weights = pd.Series(1.0, index=calendar_range)
     if loc in cold_shift_locations:
         for start_str, end_str in one_shift_windows:
-            for date in calendar:
+            for date in calendar_range:
                 if f"{date:%m-%d}" >= start_str and f"{date:%m-%d}" <= end_str and date.weekday() < 5:
                     shift_weights[date] = 0.5
-    adj_days = shift_weights[calendar.weekday < 5].sum()
+    adj_days = shift_weights[calendar_range.weekday < 5].sum()
     planned = adj_days * shifts_per_day
 
-    sub = bucket_df[(bucket_df["location"] == loc) & (bucket_df["doy"].isin(doy_list))]
-    if not sub.empty:
-        bm = (sub[tmax_cols].mean() * 100)
-        sm = (bm / 100 * planned).fillna(0)
-        sum_max = sum_max.add(sm, fill_value=0)
+    sub = raw_df[(raw_df["location"] == loc) & (raw_df["date"].dt.dayofyear.isin(doy_list))].copy()
+    if sub.empty:
+        continue
 
-        bn = (sub[tmin_cols].mean() * 100)
-        sn = (bn / 100 * planned).fillna(0)
-        sum_min = sum_min.add(sn, fill_value=0)
-        ba = (sub[[f"pr_avg_bin_{i}" for i in range(8)]].mean() * 100)
-    sa = (ba / 100 * planned).fillna(0)
-    sum_avg = sum_avg.add(sa, fill_value=0)
+    # Apply dynamic binning for each location
+    sub["tmax_bin"] = pd.cut(sub["tmax_c"], bins=bins_c, labels=range(bin_count), right=False, include_lowest=True)
+    sub["tmin_bin"] = pd.cut(sub["tmin_c"], bins=bins_c, labels=range(bin_count), right=False, include_lowest=True)
+    sub["tavg_bin"] = pd.cut(sub["tavg_c"], bins=bins_c, labels=range(bin_count), right=False, include_lowest=True)
 
+    max_dummies = pd.get_dummies(sub["tmax_bin"], prefix="bin").reindex(columns=[f"bin_{i}" for i in bucket_range], fill_value=0)
+    min_dummies = pd.get_dummies(sub["tmin_bin"], prefix="bin").reindex(columns=[f"bin_{i}" for i in bucket_range], fill_value=0)
+    avg_dummies = pd.get_dummies(sub["tavg_bin"], prefix="bin").reindex(columns=[f"bin_{i}" for i in bucket_range], fill_value=0)
 
-df_sum_max = pd.DataFrame({
-    "Shifts (100%)": sum_max.round(0).astype(int),
-    "Shifts (90%)": (sum_max * 0.9).round(0).astype(int)
-}).reindex([f"pr_max_bin_{i}" for i in range(8)], fill_value=0)
+    sum_max = sum_max.add((max_dummies.mean() * planned), fill_value=0)
+    sum_min = sum_min.add((min_dummies.mean() * planned), fill_value=0)
+    sum_avg = sum_avg.add((avg_dummies.mean() * planned), fill_value=0)
 
-df_sum_max.index = df_sum_max.index.map(lambda x: bucket_label_map[f"bin{x.split('_')[-1]}"])
+# Display
+def format_total_table(series, label):
+    df = pd.DataFrame({
+        "Shifts (100%)": series.round(0).astype(int),
+        "Shifts (90%)": (series * 0.9).round(0).astype(int)
+    })
+    df.index = bin_labels
+    total = df.sum(numeric_only=True).to_frame().T
+    total.index = ["TOTAL"]
+    return pd.concat([df, total])
 
-# Add summary row
-total_row = df_sum_max.sum(numeric_only=True).to_frame().T
-total_row.index = ["TOTAL"]
-df_sum_max = pd.concat([df_sum_max, total_row])
+df_sum_max = format_total_table(sum_max, "TMAX")
+df_sum_min = format_total_table(sum_min, "TMIN")
+df_sum_avg = format_total_table(sum_avg, "TAVG")
 
 st.markdown("### 🔥 TMAX Shift Totals Across All Locations")
-st.dataframe(df_sum_max)
-
-df_sum_min = pd.DataFrame({
-    "Shifts (100%)": sum_min.round(0).astype(int),
-    "Shifts (90%)": (sum_min * 0.9).round(0).astype(int)
-}).reindex([f"pr_min_bin_{i}" for i in range(8)], fill_value=0)
-
-df_sum_min.index = df_sum_min.index.map(lambda x: bucket_label_map[f"bin{x.split('_')[-1]}"])
-
-# Add summary row
-total_row = df_sum_min.sum(numeric_only=True).to_frame().T
-total_row.index = ["TOTAL"]
-df_sum_min = pd.concat([df_sum_min, total_row])
+st.dataframe(df_sum_max.style.format({"Shifts (100%)": "{:.0f}", "Shifts (90%)": "{:.0f}"}).apply(
+    lambda df: ["font-weight: bold" if i == "TOTAL" else "" for i in df.index], axis=0))
 
 st.markdown("### ❄️ TMIN Shift Totals Across All Locations")
-st.dataframe(df_sum_min)
-
-df_sum_avg = pd.DataFrame({
-    "Shifts (100%)": sum_avg.round(0).astype(int),
-    "Shifts (90%)": (sum_avg * 0.9).round(0).astype(int)
-}).reindex([f"pr_avg_bin_{i}" for i in range(8)], fill_value=0)
-
-df_sum_avg.index = df_sum_avg.index.map(lambda x: bucket_label_map[f"bin{x.split('_')[-1]}"])
-
-# Add summary row
-total_row = df_sum_avg.sum(numeric_only=True).to_frame().T
-total_row.index = ["TOTAL"]
-df_sum_avg = pd.concat([df_sum_avg, total_row])
+st.dataframe(df_sum_min.style.format({"Shifts (100%)": "{:.0f}", "Shifts (90%)": "{:.0f}"}).apply(
+    lambda df: ["font-weight: bold" if i == "TOTAL" else "" for i in df.index], axis=0))
 
 st.markdown("### 📊 TAVG Shift Totals Across All Locations")
-st.dataframe(df_sum_avg.style.apply(
-    lambda df: ["font-weight: bold" if i == "TOTAL" else "" for i in df.index],
-    axis=0
-))
+st.dataframe(df_sum_avg.style.format({"Shifts (100%)": "{:.0f}", "Shifts (90%)": "{:.0f}"}).apply(
+    lambda df: ["font-weight: bold" if i == "TOTAL" else "" for i in df.index], axis=0))
 
 # -------------------------------
 # 🗂️ Multi-Location Bucket Matrix Table
@@ -374,22 +286,23 @@ selected_matrix_locs = st.multiselect(
 matrix_rows = []
 
 for loc in selected_matrix_locs:
-    shift_weights = pd.Series(1.0, index=calendar)
+    shift_weights = pd.Series(1.0, index=calendar_range)
     if loc in cold_shift_locations:
         for start_str, end_str in one_shift_windows:
-            for date in calendar:
+            for date in calendar_range:
                 if f"{date:%m-%d}" >= start_str and f"{date:%m-%d}" <= end_str and date.weekday() < 5:
                     shift_weights[date] = 0.5
-    adj_days = shift_weights[calendar.weekday < 5].sum()
+    adj_days = shift_weights[calendar_range.weekday < 5].sum()
     planned = adj_days * shifts_per_day
 
-    sub = bucket_df[(bucket_df["location"] == loc) & (bucket_df["doy"].isin(doy_list))]
+    sub = raw_df[(raw_df["location"] == loc) & (raw_df["date"].dt.dayofyear.isin(doy_list))].copy()
     if sub.empty:
         continue
 
-    # Use TMAX buckets (or you could toggle TMIN if needed)
-    bucket_cols = [f"pr_max_bin_{i}" for i in range(7)]
-    bucket_vals = (sub[bucket_cols].mean() * planned).round(0).astype(int)
+    # Apply binning for this location
+    sub["tmax_bin"] = pd.cut(sub["tmax_c"], bins=bins_c, labels=range(bin_count), right=False, include_lowest=True)
+    bucket_dummies = pd.get_dummies(sub["tmax_bin"], prefix="bin").reindex(columns=[f"bin_{i}" for i in bucket_range], fill_value=0)
+    bucket_vals = (bucket_dummies.mean() * planned).round(0).astype(int)
 
     total = int(bucket_vals.sum())
     bucket_vals["Total"] = total
@@ -399,53 +312,48 @@ for loc in selected_matrix_locs:
 
 if matrix_rows:
     df_matrix = pd.DataFrame(matrix_rows).set_index("Location")
-    df_matrix.columns = [bucket_label_map.get(f"bin{c.split('_')[-1]}", c) if c != "Total" else "Total" for c in df_matrix.columns]
+    df_matrix.columns = [bin_labels[i] if f"bin_{i}" in df_matrix.columns else c for i, c in enumerate(df_matrix.columns)]
     # Add summary row
     summary_row = df_matrix.sum(numeric_only=True)
     summary_row.name = "TOTAL"
     df_matrix_final = pd.concat([df_matrix, summary_row.to_frame().T])
-    st.dataframe(df_matrix_final)
+    st.dataframe(df_matrix_final.style.apply(
+        lambda df: ["font-weight: bold" if i == "TOTAL" else "" for i in df.index], axis=0))
 else:
     st.info("No data available for selected locations.")
 
-
 # -------------------------------
-# 📉 Temperature Distribution Comparison (PDF)
+# 📉 Temperature Distribution by Location (PDF)
 # -------------------------------
-
 st.subheader("📉 Temperature Distribution by Location (PDF)")
 
-# Toggle between TMAX and TMIN
 temp_type = st.radio("Select temperature type", ["TMAX", "TMIN", "TAVG"], horizontal=True)
 
-# Select locations to compare
 selected_locs = st.multiselect(
     "Choose locations to include",
     options=locations,
-    default=locations  # show all by default
+    default=locations
 )
 
-# Pick bins and label
 if temp_type == "TMAX":
-    temp_column = "expected_tmax"
-    bins = np.linspace(0, 120, 100)
+    temp_column = "tmax_c"
+    bins = np.linspace(-60, 120, 100)
     chart_title = "TMAX Distribution by Location (°F)"
 elif temp_type == "TMIN":
-    temp_column = "expected_tmin"
+    temp_column = "tmin_c"
     bins = np.linspace(-60, 100, 100)
     chart_title = "TMIN Distribution by Location (°F)"
 else:
-    temp_column = "expected_tavg"
+    temp_column = "tavg_c"
     bins = np.linspace(-60, 120, 100)
     chart_title = "TAVG Distribution by Location (°F)"
-
 
 bin_centers = (bins[:-1] + bins[1:]) / 2
 pdf_data = []
 
 for loc in selected_locs:
-    raw = bucket_df[(bucket_df["location"] == loc) & (bucket_df["doy"].isin(doy_list))]
-    values = raw[temp_column].dropna() * 9/5 + 32  # Convert to °F
+    sub = raw_df[(raw_df["location"] == loc) & (raw_df["date"].dt.dayofyear.isin(doy_list))]
+    values = sub[temp_column].dropna() * 9/5 + 32  # Convert to °F
 
     if values.empty:
         continue
@@ -478,3 +386,4 @@ if pdf_data:
     )
 else:
     st.warning("No temperature data available for selected locations.")
+
