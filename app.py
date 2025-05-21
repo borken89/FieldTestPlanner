@@ -261,8 +261,6 @@ melted["Temperature Type"] = melted["Temperature Type"].map({
     "tavg_f": "Avg Temp (TAVG)"
 })
 
-st.write("Chart preview:", melted.head())
-
 line_chart = alt.Chart(melted).mark_line().encode(
     x=alt.X("date:T", title="Day of Year"),
     y=alt.Y("Degrees (°F)", title="Avg Temp (°F)"),
