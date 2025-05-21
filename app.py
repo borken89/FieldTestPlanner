@@ -13,6 +13,7 @@ def load_data():
     return pd.read_parquet("combined_daily_temperature.parquet")
 
 raw_df = load_data()
+raw_df["doy"] = raw_df["date"].dt.dayofyear
 locations = sorted(raw_df["location"].unique())
 
 cold_shift_locations = ["Fairbanks AK", "CASS LAKE (Bemidji) MN"]
@@ -77,23 +78,37 @@ with st.expander("📍 View Station Names and IDs"):
 # -------------------------------
 # 📍 Location + Date Range
 # -------------------------------
+st.subheader("🗺️ Select Location and Date Range")
+
 location = st.selectbox("📍 Select location", locations)
 
 col1, col2 = st.columns(2)
-anchor_year = 2025
+anchor_year = 2025  # Dummy year for consistent calendar logic
 
 months = list(range(1, 13))
-start_month = col1.selectbox("📅 Start Month", months, index=5, format_func=lambda m: calendar.month_name[m])
-start_day = col1.selectbox("📅 Start Day", list(range(1, calendar.monthrange(anchor_year, start_month)[1] + 1)), index=0)
+month_names = [calendar.month_name[m] for m in months]
 
-end_month = col2.selectbox("📅 End Month", months, index=7, format_func=lambda m: calendar.month_name[m])
-end_day = col2.selectbox("📅 End Day", list(range(1, calendar.monthrange(anchor_year, end_month)[1] + 1)), index=30)
+# Start month/day
+start_month = col1.selectbox("📅 Start Month", months, index=0, format_func=lambda m: calendar.month_name[m])
+start_day_options = list(range(1, calendar.monthrange(anchor_year, start_month)[1] + 1))
+start_day = col1.selectbox("📅 Start Day", start_day_options, index=0)
 
+# End month/day
+end_month = col2.selectbox("📅 End Month", months, index=1, format_func=lambda m: calendar.month_name[m])
+end_day_options = list(range(1, calendar.monthrange(anchor_year, end_month)[1] + 1))
+default_end_index = min(30, len(end_day_options) - 1)
+end_day = col2.selectbox("📅 End Day", end_day_options, index=default_end_index)
+
+# Construct calendar range
 start_date = datetime(anchor_year, start_month, start_day)
 end_date = datetime(anchor_year, end_month, end_day)
+if start_date > end_date:
+    st.error("⚠️ Start date must be before end date.")
+    st.stop()
 calendar_range = pd.date_range(start=start_date, end=end_date)
 
 shifts_per_day = st.slider("⚙️ Shifts per day", 1, 3, 2)
+
 
 # -------------------------------
 # ⚙️ Bucket customization
@@ -207,6 +222,48 @@ st.dataframe(df_min.style.format({"% of Days": "{:.2f}", "Shifts (100%)": "{:.0f
 st.subheader("📊 TAVG Buckets")
 st.dataframe(df_avg.style.format({"% of Days": "{:.2f}", "Shifts (100%)": "{:.0f}", "Shifts (90%)": "{:.0f}"}).apply(
     lambda df: ["font-weight: bold" if i == "TOTAL" else "" for i in df.index], axis=0))
+
+# -------------------------------
+# 📈 Avg Daily Temperatures (°F) Over Selected Window (DOY-averaged)
+# -------------------------------
+st.subheader("📈 Avg Daily Temperatures (°F) Over Selected Window (2015–2024 Averages)")
+
+# Make sure DOY exists
+raw_df = raw_df[raw_df["date"].dt.year.between(2015, 2024)]
+raw_df = raw_df[raw_df["doy"] != 366]
+
+doy_list = calendar_range.dayofyear
+df_plot = raw_df[(raw_df["location"] == location) & (raw_df["doy"].isin(doy_list))]
+
+# Average across years by DOY
+avg_by_doy = df_plot.groupby("doy")[["tmax_c", "tmin_c", "tavg_c"]].mean().reset_index()
+avg_by_doy["date"] = pd.to_datetime(avg_by_doy["doy"], format="%j")
+avg_by_doy["tmax_f"] = avg_by_doy["tmax_c"] * 9/5 + 32
+avg_by_doy["tmin_f"] = avg_by_doy["tmin_c"] * 9/5 + 32
+avg_by_doy["tavg_f"] = avg_by_doy["tavg_c"] * 9/5 + 32
+
+melted = pd.melt(
+    avg_by_doy,
+    id_vars=["date"],
+    value_vars=["tmax_f", "tmin_f", "tavg_f"],
+    var_name="Temperature Type",
+    value_name="Degrees (°F)"
+)
+
+melted["Temperature Type"] = melted["Temperature Type"].map({
+    "tmax_f": "Max Temp (TMAX)",
+    "tmin_f": "Min Temp (TMIN)",
+    "tavg_f": "Avg Temp (TAVG)"
+})
+
+line_chart = alt.Chart(melted).mark_line().encode(
+    x=alt.X("date:T", title="Day of Year"),
+    y=alt.Y("Degrees (°F)", title="Avg Temp (°F)"),
+    color="Temperature Type"
+).properties(height=300)
+
+st.altair_chart(line_chart, use_container_width=True)
+
 
 # -------------------------------
 # 🧮 Total Planned Shifts Across All Locations
@@ -349,7 +406,7 @@ else:
     chart_title = "TAVG Distribution by Location (°F)"
 
 bin_centers = (bins[:-1] + bins[1:]) / 2
-pdf_data = []
+pdf_chart_data = []
 
 for loc in selected_locs:
     sub = raw_df[(raw_df["location"] == loc) & (raw_df["date"].dt.dayofyear.isin(doy_list))]
@@ -359,14 +416,14 @@ for loc in selected_locs:
         continue
 
     pdf, _ = np.histogram(values, bins=bins, density=True)
-    pdf_data.append(pd.DataFrame({
+    pdf_chart_data.append(pd.DataFrame({
         "Temperature (°F)": bin_centers,
         "Density": pdf,
         "Location": loc
     }))
 
-if pdf_data:
-    pdf_df = pd.concat(pdf_data)
+if pdf_chart_data:
+    pdf_df = pd.concat(pdf_chart_data)
 
     pdf_chart = alt.Chart(pdf_df).mark_line().encode(
         x=alt.X("Temperature (°F)", title="Temperature (°F)"),
